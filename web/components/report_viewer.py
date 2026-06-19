@@ -14,6 +14,24 @@ def _strip_think(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
 
 
+def _safe_filename_part(value: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|\s]+', "_", value.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or value
+
+
+def _download_basename(ticker: str, trade_date: str) -> str:
+    try:
+        from tradingagents.dataflows.a_stock import resolve_ticker_name
+
+        stock_name = resolve_ticker_name(ticker)
+    except Exception:
+        stock_name = None
+
+    label = _safe_filename_part(stock_name) if stock_name else _safe_filename_part(ticker)
+    return f"TradingAgents-Astock_{trade_date}_{label}"
+
+
 def _signal_style(signal: str) -> tuple[str, str]:
     s = signal.upper()
     if "BUY" in s:
@@ -77,13 +95,14 @@ def render_report(
 
     # Markdown export always works (no font dependency); PDF is generated
     # lazily and guarded so a PDF/font failure never crashes the results page.
+    download_basename = _download_basename(ticker, trade_date)
     col_md, col_pdf, col_spacer = st.columns([1, 1, 2])
     with col_md:
         md_text = generate_markdown(final_state, ticker, trade_date, signal)
         st.download_button(
             "📥 下载 Markdown",
             data=md_text.encode("utf-8"),
-            file_name=f"TradingAgents-Astock_{ticker}_{trade_date}.md",
+            file_name=f"{download_basename}.md",
             mime="text/markdown",
             use_container_width=True,
         )
@@ -93,7 +112,7 @@ def render_report(
             st.download_button(
                 "📄 下载 PDF",
                 data=pdf_bytes,
-                file_name=f"TradingAgents-Astock_{ticker}_{trade_date}.pdf",
+                file_name=f"{download_basename}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
             )

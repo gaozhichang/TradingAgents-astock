@@ -67,6 +67,67 @@ def _normalize_ticker(symbol: str) -> str:
     return safe_ticker_component(s)
 
 
+def _is_a_stock_code(code: str) -> bool:
+    """Return True for 6-digit mainland A-share stock codes."""
+    return bool(_re.fullmatch(r"[0368]\d{5}", code))
+
+
+def _resolve_ticker_eastmoney(keyword: str) -> str | None:
+    """Resolve a Chinese stock name through Eastmoney's public suggest API."""
+    url = "https://searchapi.eastmoney.com/api/suggest/get"
+    params = {
+        "input": keyword,
+        "type": "14",
+        "token": "D43BF722C8E33D3A1CE7C63F610D0193",
+    }
+    headers = {
+        "Referer": "https://so.eastmoney.com/",
+        "User-Agent": _UA,
+    }
+    resp = _requests.get(url, params=params, headers=headers, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    rows = data.get("QuotationCodeTable", {}).get("Data") or []
+    matches = []
+    clean = keyword.replace(" ", "").replace("　", "")
+    for row in rows:
+        code = str(row.get("Code", "")).strip()
+        name = str(row.get("Name", "")).replace(" ", "").replace("　", "")
+        classify = str(row.get("Classify", ""))
+        if classify != "AStock" or not _is_a_stock_code(code):
+            continue
+        if name == clean:
+            return code
+        if clean in name:
+            matches.append((name, code))
+    if len(matches) == 1:
+        return matches[0][1]
+    return None
+
+
+def resolve_ticker_name(code: str) -> str | None:
+    """Resolve a 6-digit A-share code to its Chinese stock name."""
+    normalized = _normalize_ticker(code)
+    if not _is_a_stock_code(normalized):
+        return None
+
+    try:
+        _, c2n = _build_name_code_map()
+        name = c2n.get(normalized)
+        if name:
+            return name
+    except Exception as exc:
+        logger.warning("mootdx code-name lookup failed for %s: %s", normalized, exc)
+
+    try:
+        quote = _tencent_quote([normalized]).get(normalized, {})
+        name = str(quote.get("name", "")).strip()
+        return name or None
+    except Exception as exc:
+        logger.warning("Tencent code-name lookup failed for %s: %s", normalized, exc)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Stock name <-> code mapping (cached)
 # ---------------------------------------------------------------------------
@@ -120,10 +181,27 @@ def resolve_ticker(user_input: str) -> str:
     has_chinese = any("一" <= ch <= "鿿" for ch in s)
 
     if not has_chinese:
-        return _normalize_ticker(s)
+        code = _normalize_ticker(s)
+        if not _is_a_stock_code(code):
+            raise ValueError(
+                f"'{user_input}' 不是有效的A股股票代码，请输入6位代码或中文股票名称"
+            )
+        return code
 
     clean = s.replace(" ", "").replace("　", "")
-    n2c, _ = _build_name_code_map()
+    try:
+        n2c, _ = _build_name_code_map()
+    except Exception as exc:
+        logger.warning("mootdx stock-name lookup failed for %s: %s", s, exc)
+        try:
+            code = _resolve_ticker_eastmoney(clean)
+        except Exception as fallback_exc:
+            raise ValueError(
+                f"无法解析股票名称 '{s}'，请改用6位A股代码"
+            ) from fallback_exc
+        if code:
+            return code
+        raise ValueError(f"找不到股票 '{s}'，请检查名称是否正确") from exc
 
     if clean in n2c:
         return n2c[clean]
